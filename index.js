@@ -1,60 +1,67 @@
 const express = require('express');
 const http = require('http');
-const socketIo = require('socket.io');
-const mongoose = require('mongoose');
+const { Server } = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, {
-    cors: {
-        origin: 'http://localhost:3000',
-        methods: ['GET', 'POST']
-    }
-});
-
 app.use(cors());
 app.use(express.json());
 
-mongoose.connect('mongodb://localhost:27017/whiteboard', {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "http://localhost:3000",
+        methods: ["GET", "POST"]
+    }
 });
 
-const boardSchema = new mongoose.Schema({
-    boardId: String,
-    content: Object,
+let boards = {}; // Store board data by boardId
+
+// Create new board
+app.post('/create-board', (req, res) => {
+    const boardId = Math.floor(100000 + Math.random() * 900000).toString();
+    boards[boardId] = [];
+    res.json({ boardId });
 });
 
-const Board = mongoose.model('Board', boardSchema);
+// Check if board exists
+app.get('/board/:boardId', (req, res) => {
+    const { boardId } = req.params;
+    res.json({ exists: !!boards[boardId] });
+});
 
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
+    console.log('User connected:', socket.id);
 
     socket.on('join-board', (boardId) => {
         socket.join(boardId);
+        if (boards[boardId]) {
+            socket.emit('load-board', boards[boardId]);
+        }
     });
 
-    socket.on('draw', (data) => {
-        socket.to(data.boardId).emit('draw', data);
+    socket.on('draw', ({ boardId, data }) => {
+        if (!boards[boardId]) boards[boardId] = [];
+        boards[boardId].push(data); // Save drawing data
+        socket.to(boardId).emit('draw', data); // Send to others
     });
 
-    socket.on('add-note', (data) => {
-        socket.to(data.boardId).emit('add-note', data);
+    socket.on('save-board', (boardId) => {
+        console.log(`Board ${boardId} saved.`);
     });
 
-    socket.on('save-board', async (data) => {
-        await Board.findOneAndUpdate(
-            { boardId: data.boardId },
-            { content: data.content },
-            { upsert: true }
-        );
+    socket.on('clear-board', (boardId) => {
+        boards[boardId] = []; // Clear the drawing data for the board
+        io.to(boardId).emit('clear-board'); // Notify all users in the board
+        console.log(`Board ${boardId} cleared.`);
+    });
+    
+
+    socket.on('disconnect', () => {
+        console.log('User disconnected:', socket.id);
     });
 });
 
-app.get('/board/:boardId', async (req, res) => {
-    const board = await Board.findOne({ boardId: req.params.boardId });
-    res.json(board ? board.content : null);
+server.listen(4000, () => {
+    console.log('Server is running on http://localhost:4000');
 });
-
-server.listen(5000, () => console.log('Server running on http://localhost:5000'));
